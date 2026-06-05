@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Accounts Work List</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0f0e0c; }
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #1a1714; }
+::-webkit-scrollbar-thumb { background: #3a3530; }
+input[type=date]::-webkit-calendar-picker-indicator { filter: invert(0.5); }
+.fpill:hover { background: #2a2520 !important; }
+.trow:hover .dbtn { opacity: 1 !important; }
+.dbtn { opacity: 0; transition: opacity 0.15s; }
+.daybtn:hover { border-color: #b84c1e !important; }
+input, select, button { font-family: inherit; }
+@media (max-width: 640px) {
+  .dsk-sb { display: none !important; }
+  .mob-menu { display: block !important; }
+  .dsk-add { display: none !important; }
+  .mob-add { display: flex !important; }
+}
+@media (min-width: 641px) {
+  .mob-topbtn { display: none !important; }
+  .mob-menu { display: none !important; }
+  .mob-add { display: none !important; }
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const SK = "acct-v3";
+const SCH = "acct-sched-v2";
+
+const CATS = [
+  { id:"payroll",label:"Payroll",color:"#2c4a8a",bg:"#e8edf8" },
+  { id:"tax",label:"Tax",color:"#8a2c2c",bg:"#f8e8e8" },
+  { id:"invoicing",label:"Invoicing",color:"#2a6e4a",bg:"#e8f2ec" },
+  { id:"reconciliation",label:"Reconciliation",color:"#7a5500",bg:"#fdf5e0" },
+  { id:"reporting",label:"Reporting",color:"#5c2a8a",bg:"#f0e8f8" },
+  { id:"compliance",label:"Compliance",color:"#8a2c60",bg:"#fde8f0" },
+  { id:"expenses",label:"Expenses",color:"#1a6a6a",bg:"#e8f8f8" },
+  { id:"other",label:"Other",color:"#555",bg:"#f0f0f0" },
+];
+const DAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const DAYF = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const PO = {high:0,medium:1,low:2};
+const PC = {high:"#b84c1e",medium:"#8a6200",low:"#2a6e4a"};
+const ts = () => new Date().toISOString().split("T")[0];
+
+function offDay(d,offs) { if(!d||!offs||!offs.length) return false; return offs.includes(new Date(d+"T00:00:00").getDay()); }
+function overdue(t) { return !t.done && t.due && t.due < ts(); }
+function dueSoon(t) {
+  if(!t.due||t.done) return false;
+  const today=new Date(); today.setHours(0,0,0,0);
+  return (new Date(t.due+"T00:00:00")-today)/86400000 <= 3;
+}
+function fmtDue(d) {
+  if(!d) return "";
+  return new Date(d+"T00:00:00").toLocaleDateString("en-GB",{day:"numeric",month:"short",weekday:"short"});
+}
+function addDays(d,n) { const x=new Date(d+"T00:00:00"); x.setDate(x.getDate()+n); return x.toISOString().split("T")[0]; }
+function nextWorkingDay(fromDate, offDays, skip=1) {
+  let d = fromDate;
+  let count = 0;
+  while(count < skip) {
+    d = addDays(d, 1);
+    if(!offDays.includes(new Date(d+"T00:00:00").getDay())) count++;
+  }
+  return d;
+}
+function nextOccurrence(task, offDays) {
+  if(!task.repeat || task.repeat === "none") return null;
+  const base = task.due || ts();
+  if(task.repeat === "daily-working") {
+    return nextWorkingDay(base, offDays);
+  }
+  if(task.repeat === "weekly-days" && task.repeatDays && task.repeatDays.length) {
+    // find next date that matches one of the repeatDays
+    let d = addDays(base, 1);
+    for(let i=0;i<14;i++) {
+      const day = new Date(d+"T00:00:00").getDay();
+      if(task.repeatDays.includes(day)) return d;
+      d = addDays(d,1);
+    }
+  }
+  if(task.repeat === "monthly") {
+    const b = new Date(base+"T00:00:00");
+    const next = new Date(b.getFullYear(), b.getMonth()+1, task.repeatMonthDay||b.getDate());
+    return next.toISOString().split("T")[0];
+  }
+  return null;
+}
+
+const makeSeed = () => {
+  const d=(n)=>{ const x=new Date(); x.setDate(x.getDate()+n); return x.toISOString().split("T")[0]; };
+  return [
+    {id:1,name:"Process this month's payroll run",cat:"payroll",pri:"high",due:d(2),done:false,added:Date.now()-5000,repeat:"monthly",repeatMonthDay:1},
+    {id:2,name:"Reconcile bank statements",cat:"reconciliation",pri:"high",due:d(-1),done:false,added:Date.now()-4000,repeat:"monthly",repeatMonthDay:28},
+    {id:3,name:"Submit VAT return",cat:"tax",pri:"high",due:d(5),done:false,added:Date.now()-3000,repeat:"none"},
+    {id:4,name:"Chase overdue invoices",cat:"invoicing",pri:"medium",due:d(3),done:false,added:Date.now()-2000,repeat:"weekly-days",repeatDays:[1,3,5]},
+    {id:5,name:"Daily expense check",cat:"expenses",pri:"low",due:d(0),done:false,added:Date.now()-1000,repeat:"daily-working"},
+    {id:6,name:"Petty cash reconcile",cat:"reconciliation",pri:"low",due:d(8),done:true,added:Date.now()-6000,repeat:"none"},
+  ];
+};
+
+// REPEAT BADGE
+function RepeatBadge({repeat,repeatDays,repeatMonthDay}) {
+  if(!repeat||repeat==="none") return null;
+  let label="";
+  if(repeat==="daily-working") label="↻ Daily (work days)";
+  else if(repeat==="weekly-days") label=`↻ ${(repeatDays||[]).map(d=>DAYS[d]).join(",")}`;
+  else if(repeat==="monthly") label=`↻ Monthly (${repeatMonthDay||1}${[,"st","nd","rd"][repeatMonthDay]||"th"})`;
+  return <span style={{fontSize:9,fontFamily:"monospace",letterSpacing:"0.05em",padding:"2px 6px",background:"#1e2a1e",color:"#4a9a6a",border:"1px solid #2a4a2a"}}>{label}</span>;
+}
+
+// REPEAT PICKER COMPONENT
+function RepeatPicker({repeat,setRepeat,repeatDays,setRepeatDays,repeatMonthDay,setRepeatMonthDay,offDays}) {
+  return (
+    <div style={{background:"#0f0e0c",border:"1px solid #3a3530",padding:12,display:"flex",flexDirection:"column",gap:10}}>
+      <div style={{fontFamily:"monospace",fontSize:9,letterSpacing:"0.12em",textTransform:"uppercase",color:"#6b6660"}}>Repeat Options</div>
+      {/* 4 mode buttons */}
+      <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+        {[["none","No Repeat"],["daily-working","Daily\n(Work Days)"],["weekly-days","Specific\nWeekdays"],["monthly","Monthly\n(Fixed Date)"]].map(([v,l])=>(
+          <button key={v} onClick={()=>setRepeat(v)} style={{
+            padding:"8px 10px",fontFamily:"monospace",fontSize:10,fontWeight:600,letterSpacing:"0.04em",textTransform:"uppercase",
+            background:repeat===v?"#b84c1e":"#1a1714",
+            color:repeat===v?"white":"#7a7068",
+            border:"2px solid "+(repeat===v?"#b84c1e":"#3a3530"),
+            cursor:"pointer",whiteSpace:"pre-line",lineHeight:1.4,textAlign:"center",minWidth:80
+          }}>{l}</button>
+        ))}
+      </div>
+
+      {/* Daily working — show which days are working */}
+      {repeat==="daily-working" && (
+        <div style={{fontSize:11,color:"#4a9a6a",fontFamily:"monospace"}}>
+          ✓ Will repeat every: <b>{DAYS.filter((_,i)=>!offDays.includes(i)).join(", ")||"No working days set"}</b>
+        </div>
+      )}
+
+      {/* Weekly days picker */}
+      {repeat==="weekly-days" && (
+        <div style={{display:"flex",flexDirection:"column",gap:6}}>
+          <div style={{fontSize:10,color:"#6b6660",fontFamily:"monospace",letterSpacing:"0.08em"}}>SELECT DAYS TO REPEAT:</div>
+          <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+            {DAYS.map((day,i)=>{
+              const sel=(repeatDays||[]).includes(i);
+              const off=offDays.includes(i);
+              return (
+                <button key={i} className="daybtn" onClick={()=>{
+                  const cur=repeatDays||[];
+                  setRepeatDays(sel?cur.filter(d=>d!==i):[...cur,i]);
+                }} style={{
+                  width:42,height:42,fontFamily:"monospace",fontSize:10,fontWeight:600,
+                  textTransform:"uppercase",cursor:"pointer",
+                  background:sel?"#2a4a2a":"#1a1714",
+                  border:"2px solid "+(sel?"#2a6e4a":off?"#4a2520":"#3a3530"),
+                  color:sel?"#4a9a6a":off?"#6b4040":"#6b6660"
+                }}>
+                  <div>{day}</div>
+                  {off&&<div style={{fontSize:7,marginTop:1,color:"#6b4040"}}>OFF</div>}
+                </button>
+              );
+            })}
+          </div>
+          {(repeatDays||[]).length>0&&<div style={{fontSize:10,color:"#4a9a6a",fontFamily:"monospace"}}>↻ Repeats on: {(repeatDays||[]).map(d=>DAYF[d]).join(", ")}</div>}
+        </div>
+      )}
+
+      {/* Monthly picker */}
+      {repeat==="monthly" && (
+        <div style={{display:"flex",flexDirection:"column",gap:6}}>
+          <div style={{fontSize:10,color:"#6b6660",fontFamily:"monospace",letterSpacing:"0.08em"}}>REPEAT ON DAY OF MONTH:</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+            {Array.from({length:31},(_,i)=>i+1).map(d=>(
+              <button key={d} onClick={()=>setRepeatMonthDay(d)} style={{
+                width:34,height:30,fontFamily:"monospace",fontSize:11,fontWeight:600,
+                background:repeatMonthDay===d?"#b84c1e":"#1a1714",
+                color:repeatMonthDay===d?"white":"#6b6660",
+                border:"1px solid "+(repeatMonthDay===d?"#b84c1e":"#3a3530"),
+                cursor:"pointer"
+              }}>{d}</button>
+            ))}
+          </div>
+          {repeatMonthDay&&<div style={{fontSize:10,color:"#4a9a6a",fontFamily:"monospace"}}>↻ Repeats every month on the {repeatMonthDay}{[,"st","nd","rd"][repeatMonthDay]||"th"}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  const [tasks,setTasks]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [filter,setFilter]=useState("all");
+  const [sort,setSort]=useState("priority");
+  const [menuOpen,setMenuOpen]=useState(false);
+  const [schedOpen,setSchedOpen]=useState(false);
+  const [schedMode,setSchedMode]=useState("with-weekoff");
+  const [customOff,setCustomOff]=useState([0]);
+
+  // add form
+  const [newName,setNewName]=useState("");
+  const [newCat,setNewCat]=useState("payroll");
+  const [newPri,setNewPri]=useState("medium");
+  const [newDue,setNewDue]=useState("");
+  const [newRepeat,setNewRepeat]=useState("none");
+  const [newRepDays,setNewRepDays]=useState([]);
+  const [newRepMDay,setNewRepMDay]=useState(1);
+  const [addOpen,setAddOpen]=useState(false);
+  const [showRepeat,setShowRepeat]=useState(false);
+
+  const offDays = schedMode==="with-weekoff"?[0]:schedMode==="no-weekoff"?[]:customOff;
+
+  useEffect(()=>{
+    try{const d=JSON.parse(localStorage.getItem(SK));setTasks(d&&d.length?d:makeSeed());}catch{setTasks(makeSeed());}
+    try{const s=JSON.parse(localStorage.getItem(SCH));if(s){setSchedMode(s.mode||"with-weekoff");setCustomOff(s.custom||[0]);}}catch{}
+    setLoading(false);
+  },[]);
+
+  const save=(t)=>{setTasks(t);try{localStorage.setItem(SK,JSON.stringify(t));}catch{}};
+  const saveSch=(m,c)=>{try{localStorage.setItem(SCH,JSON.stringify({mode:m,custom:c}));}catch{}};
+  const setSchedM=(m)=>{setSchedMode(m);saveSch(m,customOff);};
+  const togCustom=(d)=>{const u=customOff.includes(d)?customOff.filter(x=>x!==d):[...customOff,d];setCustomOff(u);saveSch("custom",u);setSchedMode("custom");};
+
+  // When a task is checked done, if it has repeat, auto-create next occurrence
+  const toggleDone=(id)=>{
+    const task=tasks.find(t=>t.id===id);
+    if(!task) return;
+    const updated=tasks.map(t=>t.id===id?{...t,done:!t.done}:t);
+    // if marking done and has repeat, spawn next
+    if(!task.done && task.repeat && task.repeat!=="none") {
+      const nextDue=nextOccurrence(task,offDays);
+      if(nextDue) {
+        const exists=tasks.some(t=>t.name===task.name&&t.due===nextDue&&!t.done);
+        if(!exists) {
+          updated.push({...task,id:Date.now(),due:nextDue,done:false,added:Date.now()});
+        }
+      }
+    }
+    save(updated);
+  };
+
+  const deleteTask=(id)=>save(tasks.filter(t=>t.id!==id));
+  const clearCompleted=()=>{save(tasks.filter(t=>!t.done));setMenuOpen(false);};
+
+  const addTask=()=>{
+    if(!newName.trim()) return;
+    save([...tasks,{
+      id:Date.now(),name:newName.trim(),cat:newCat,pri:newPri,due:newDue,
+      done:false,added:Date.now(),
+      repeat:newRepeat,repeatDays:newRepDays,repeatMonthDay:newRepMDay
+    }]);
+    setNewName("");setNewDue("");setNewRepeat("none");setNewRepDays([]);setNewRepMDay(1);
+    setAddOpen(false);setShowRepeat(false);
+  };
+
+  const total=tasks.length,done=tasks.filter(t=>t.done).length,pending=total-done;
+  const ov=tasks.filter(overdue).length,pct=total?Math.round(done/total*100):0;
+  const counts={all:total,pending,done,overdue:ov,high:tasks.filter(t=>t.pri==="high"&&!t.done).length,
+    ...Object.fromEntries(CATS.map(c=>[`cat-${c.id}`,tasks.filter(t=>t.cat===c.id).length]))};
+
+  let vis=[...tasks];
+  if(filter==="pending") vis=vis.filter(t=>!t.done);
+  else if(filter==="done") vis=vis.filter(t=>t.done);
+  else if(filter==="overdue") vis=vis.filter(overdue);
+  else if(filter==="high") vis=vis.filter(t=>t.pri==="high"&&!t.done);
+  else if(filter==="repeat") vis=vis.filter(t=>t.repeat&&t.repeat!=="none"&&!t.done);
+  else if(filter.startsWith("cat-")) vis=vis.filter(t=>t.cat===filter.slice(4));
+
+  if(sort==="priority") vis.sort((a,b)=>(a.done-b.done)||(PO[a.pri]-PO[b.pri])||((a.due||"z").localeCompare(b.due||"z")));
+  else if(sort==="due") vis.sort((a,b)=>(a.done-b.done)||((a.due||"z").localeCompare(b.due||"z")));
+  else if(sort==="category") vis.sort((a,b)=>(a.done-b.done)||a.cat.localeCompare(b.cat));
+  else vis.sort((a,b)=>(a.done-b.done)||(b.added-a.added));
+
+  const cat=(id)=>CATS.find(c=>c.id===id)||CATS[7];
+  const ftitles={all:"All Tasks",pending:"Pending",done:"Completed",overdue:"Overdue",high:"High Priority",repeat:"Recurring Tasks",
+    ...Object.fromEntries(CATS.map(c=>[`cat-${c.id}`,c.label]))};
+  const schedLabel=schedMode==="with-weekoff"?"Sun Off":schedMode==="no-weekoff"?"No Weekoff":`${customOff.length}d off`;
+
+  const FILTERS=[["all","All"],["pending","Pending"],["done","Done"],["overdue","Overdue"],["high","High Pri"],["repeat","↻ Recurring"],
+    ...CATS.slice(0,-1).map(c=>[`cat-${c.id}`,c.label])];
+
+  if(loading) return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#0f0e0c",color:"#6b6660",fontFamily:"monospace",fontSize:13,letterSpacing:"0.1em"}}>LOADING…</div>;
+
+  const AddForm=({mobile})=>(
+    <div style={{background:"#1a1714",border:"1px solid #3a3530",padding:14,display:"flex",flexDirection:"column",gap:8}}>
+      <input value={newName} onChange={e=>setNewName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&!showRepeat&&addTask()} placeholder="Task name…"
+        style={{background:"#0f0e0c",border:"1px solid #3a3530",color:"#e8e4de",padding:"9px 12px",fontSize:14,outline:"none",width:"100%"}}/>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+        <select value={newCat} onChange={e=>setNewCat(e.target.value)} style={{flex:1,minWidth:120,background:"#0f0e0c",border:"1px solid #3a3530",color:"#e8e4de",padding:"9px 8px",fontSize:13,outline:"none"}}>
+          {CATS.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
+        </select>
+        <select value={newPri} onChange={e=>setNewPri(e.target.value)} style={{width:110,background:"#0f0e0c",border:"1px solid #3a3530",color:"#e8e4de",padding:"9px 8px",fontSize:13,outline:"none"}}>
+          <option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>
+        </select>
+        <div style={{position:"relative"}}>
+          <input type="date" value={newDue} onChange={e=>setNewDue(e.target.value)}
+            style={{background:newDue&&offDay(newDue,offDays)?"#3a1a10":"#0f0e0c",border:"1px solid "+(newDue&&offDay(newDue,offDays)?"#b84c1e":"#3a3530"),color:"#e8e4de",padding:"9px 10px",fontSize:12,fontFamily:"monospace",outline:"none",width:140}}/>
+          {newDue&&offDay(newDue,offDays)&&<div style={{position:"absolute",top:"100%",left:0,background:"#b84c1e",color:"white",fontSize:9,fontFamily:"monospace",padding:"2px 6px",whiteSpace:"nowrap",zIndex:10}}>⚠ OFF DAY — {DAYF[new Date(newDue+"T00:00:00").getDay()]}</div>}
+        </div>
+      </div>
+      {/* REPEAT TOGGLE */}
+      <button onClick={()=>setShowRepeat(!showRepeat)} style={{
+        background:showRepeat||newRepeat!=="none"?"#1e2a1e":"#1a1714",
+        border:"1px solid "+(showRepeat||newRepeat!=="none"?"#2a6e4a":"#3a3530"),
+        color:newRepeat!=="none"?"#4a9a6a":"#6b6660",padding:"8px 12px",cursor:"pointer",
+        fontFamily:"monospace",fontSize:10,letterSpacing:"0.08em",textTransform:"uppercase",textAlign:"left"
+      }}>
+        {newRepeat==="none"?"↻ Set Repeat (optional)":
+         newRepeat==="daily-working"?"↻ Repeats: Daily on work days":
+         newRepeat==="weekly-days"?`↻ Repeats: ${(newRepDays||[]).map(d=>DAYS[d]).join(",")||"select days"}`:
+         `↻ Repeats: Monthly on ${newRepMDay}${[,"st","nd","rd"][newRepMDay]||"th"}`}
+        {" "}{showRepeat?"▲":"▼"}
+      </button>
+      {showRepeat&&<RepeatPicker repeat={newRepeat} setRepeat={setNewRepeat} repeatDays={newRepDays} setRepeatDays={setNewRepDays} repeatMonthDay={newRepMDay} setRepeatMonthDay={setNewRepMDay} offDays={offDays}/>}
+      <div style={{display:"flex",gap:8}}>
+        <button onClick={addTask} style={{flex:1,background:"#b84c1e",color:"white",border:"none",padding:"10px",fontFamily:"monospace",fontSize:11,letterSpacing:"0.08em",textTransform:"uppercase",cursor:"pointer"}}>+ Add Task</button>
+        <button onClick={()=>{setAddOpen(false);setShowRepeat(false);setNewRepeat("none");}} style={{flex:1,background:"none",color:"#6b6660",border:"1px solid #3a3530",padding:"10px",fontFamily:"monospace",fontSize:11,cursor:"pointer"}}>Cancel</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{fontFamily:"'IBM Plex Sans',sans-serif",background:"#0f0e0c",minHeight:"100vh",color:"#e8e4de"}}>
+      {/* HEADER */}
+      <div style={{background:"#1a1714",borderBottom:"3px solid #b84c1e",padding:"14px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:50}}>
+        <div style={{fontFamily:"'IBM Plex Mono'",fontSize:13,fontWeight:600,letterSpacing:"0.12em",textTransform:"uppercase"}}>◼ Accounts Work List</div>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <button onClick={()=>setSchedOpen(!schedOpen)} style={{fontFamily:"monospace",fontSize:10,letterSpacing:"0.08em",textTransform:"uppercase",background:schedOpen?"#b84c1e":"#2a2520",color:schedOpen?"white":"#a09a92",border:"1px solid "+(schedOpen?"#b84c1e":"#3a3530"),padding:"5px 10px",cursor:"pointer"}}>⏱ {schedLabel}</button>
+          <span style={{fontFamily:"'IBM Plex Mono'",fontSize:10,color:"#6b6660"}}>{new Date().toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"}).toUpperCase()}</span>
+          <button className="mob-topbtn" onClick={()=>setMenuOpen(!menuOpen)} style={{background:"#2a2520",border:"1px solid #3a3530",color:"#e8e4de",padding:"6px 10px",cursor:"pointer",fontFamily:"monospace",fontSize:12,display:"none"}}>☰</button>
+        </div>
+      </div>
+
+      {/* SCHEDULE PANEL */}
+      {schedOpen&&(
+        <div style={{background:"#1a1714",borderBottom:"1px solid #2a2520",padding:"16px 20px"}}>
+          <div style={{fontFamily:"monospace",fontSize:10,letterSpacing:"0.12em",textTransform:"uppercase",color:"#6b6660",marginBottom:12}}>Work Schedule</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:10,alignItems:"flex-start"}}>
+            {[["with-weekoff","With Weekoff","Mon–Sat\nSunday off"],["no-weekoff","No Weekoff","All 7 days\nworking"],["custom","Custom","Pick your\nown off days"]].map(([m,l,d])=>(
+              <button key={m} onClick={()=>setSchedM(m)} style={{background:schedMode===m?"#b84c1e":"#0f0e0c",border:"2px solid "+(schedMode===m?"#b84c1e":"#3a3530"),color:schedMode===m?"white":"#a09a92",padding:"10px 16px",cursor:"pointer",textAlign:"left",minWidth:120}}>
+                <div style={{fontFamily:"monospace",fontSize:11,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:4}}>{l}</div>
+                <div style={{fontSize:11,color:schedMode===m?"rgba(255,255,255,0.7)":"#6b6660",lineHeight:1.4,whiteSpace:"pre-line"}}>{d}</div>
+              </button>
+            ))}
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              <div style={{fontFamily:"monospace",fontSize:9,letterSpacing:"0.1em",textTransform:"uppercase",color:"#4a4540"}}>Toggle OFF days:</div>
+              <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                {DAYS.map((day,i)=>{
+                  const isOff=offDays.includes(i);
+                  return <button key={i} className="daybtn" onClick={()=>togCustom(i)} style={{width:40,height:40,background:isOff?"#2a2520":"#2a6e4a22",border:"2px solid "+(isOff?"#b84c1e":"#2a6e4a"),color:isOff?"#b84c1e":"#2a6e4a",fontFamily:"monospace",fontSize:10,fontWeight:600,textTransform:"uppercase",cursor:"pointer"}}>
+                    <div>{day}</div><div style={{fontSize:8,marginTop:2}}>{isOff?"OFF":"ON"}</div>
+                  </button>;
+                })}
+              </div>
+              <div style={{fontSize:10,color:"#4a4540",fontFamily:"monospace"}}>Working: {DAYS.filter((_,i)=>!offDays.includes(i)).join(", ")||"None"}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MOBILE MENU */}
+      {menuOpen&&(
+        <div className="mob-menu" style={{background:"#1a1714",borderBottom:"1px solid #2a2520",padding:"12px 16px",display:"none"}}>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {FILTERS.map(([f,label])=>(
+              <button key={f} className="fpill" onClick={()=>{setFilter(f);setMenuOpen(false);}} style={{padding:"5px 10px",fontFamily:"monospace",fontSize:10,letterSpacing:"0.06em",textTransform:"uppercase",background:filter===f?"#b84c1e":"#2a2520",color:filter===f?"white":"#a09a92",border:"1px solid "+(filter===f?"#b84c1e":"#3a3530"),cursor:"pointer"}}>
+                {label} {counts[f]||0}
+              </button>
+            ))}
+          </div>
+          <button onClick={clearCompleted} style={{marginTop:10,fontFamily:"monospace",fontSize:10,letterSpacing:"0.08em",textTransform:"uppercase",color:"#6b6660",background:"none",border:"1px solid #3a3530",padding:"6px 12px",cursor:"pointer",width:"100%"}}>Clear Completed</button>
+        </div>
+      )}
+
+      {/* STATS */}
+      <div style={{background:"#161310",borderBottom:"1px solid #2a2520",padding:"12px 20px",display:"flex",gap:20,alignItems:"center",overflowX:"auto"}}>
+        {[["Total",total,"#e8e4de"],["Pending",pending,"#e8e4de"],["Done",done,"#2a6e4a"],["Overdue",ov,"#b84c1e"]].map(([l,v,c])=>(
+          <div key={l} style={{display:"flex",alignItems:"baseline",gap:6,flexShrink:0}}>
+            <span style={{fontFamily:"'IBM Plex Mono'",fontSize:20,fontWeight:600,color:c}}>{v}</span>
+            <span style={{fontSize:10,textTransform:"uppercase",letterSpacing:"0.1em",color:"#6b6660",fontWeight:500}}>{l}</span>
+          </div>
+        ))}
+        <div style={{width:1,height:24,background:"#2a2520",flexShrink:0}}/>
+        <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+          <div style={{width:120,height:5,background:"#2a2520"}}><div style={{height:"100%",width:pct+"%",background:"#b84c1e",transition:"width 0.4s"}}/></div>
+          <span style={{fontFamily:"monospace",fontSize:10,color:"#6b6660"}}>{pct}%</span>
+        </div>
+        <div style={{display:"flex",alignItems:"baseline",gap:6,flexShrink:0}}>
+          <span style={{fontFamily:"'IBM Plex Mono'",fontSize:20,fontWeight:600,color:"#4a9a6a"}}>{tasks.filter(t=>t.repeat&&t.repeat!=="none"&&!t.done).length}</span>
+          <span style={{fontSize:10,textTransform:"uppercase",letterSpacing:"0.1em",color:"#6b6660",fontWeight:500}}>Recurring</span>
+        </div>
+      </div>
+
+      <div style={{display:"flex",minHeight:"calc(100vh - 110px)"}}>
+        {/* SIDEBAR */}
+        <div className="dsk-sb" style={{width:220,background:"#161310",borderRight:"1px solid #2a2520",padding:"20px 0",flexShrink:0,overflowY:"auto"}}>
+          {[["FILTER",FILTERS.slice(0,6)],["CATEGORY",CATS.slice(0,-1).map(c=>[`cat-${c.id}`,c.label])]].map(([sec,items])=>(
+            <div key={sec} style={{marginBottom:16}}>
+              <div style={{fontFamily:"monospace",fontSize:9,letterSpacing:"0.15em",color:"#4a4540",padding:"0 16px 8px",textTransform:"uppercase"}}>{sec}</div>
+              {items.map(([f,label])=>(
+                <button key={f} className="fpill" onClick={()=>setFilter(f)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"8px 16px",background:filter===f?"#1f1b18":"none",border:"none",borderLeft:filter===f?"3px solid #b84c1e":"3px solid transparent",paddingLeft:filter===f?13:16,cursor:"pointer",color:filter===f?"#e8e4de":"#7a7068",fontSize:13,fontFamily:"'IBM Plex Sans'",fontWeight:filter===f?500:400,textAlign:"left"}}>
+                  {label}
+                  <span style={{fontFamily:"monospace",fontSize:10,color:filter===f?"#b84c1e":"#4a4540",background:"#1a1714",padding:"1px 6px"}}>{counts[f]||0}</span>
+                </button>
+              ))}
+              <div style={{height:1,background:"#2a2520",margin:"12px 16px"}}/>
+            </div>
+          ))}
+          <div style={{padding:"0 16px"}}>
+            <button onClick={clearCompleted} style={{width:"100%",fontFamily:"monospace",fontSize:9,letterSpacing:"0.1em",textTransform:"uppercase",color:"#4a4540",background:"none",border:"1px solid #2a2520",padding:"8px",cursor:"pointer"}}>Clear Completed</button>
+          </div>
+        </div>
+
+        {/* MAIN */}
+        <div style={{flex:1,padding:"20px",overflowX:"hidden"}}>
+
+          {/* ADD - Desktop */}
+          <div className="dsk-add" style={{marginBottom:20}}>
+            {!addOpen?(
+              <button onClick={()=>setAddOpen(true)} style={{background:"#b84c1e",color:"white",border:"none",padding:"9px 20px",fontFamily:"monospace",fontSize:11,letterSpacing:"0.08em",textTransform:"uppercase",cursor:"pointer"}}>+ Add New Task</button>
+            ):<AddForm/>}
+          </div>
+
+          {/* ADD - Mobile */}
+          <div className="mob-add" style={{display:"none",flexDirection:"column",gap:8,marginBottom:16}}>
+            {!addOpen?(
+              <button onClick={()=>setAddOpen(true)} style={{background:"#b84c1e",color:"white",border:"none",padding:"11px",fontFamily:"monospace",fontSize:11,letterSpacing:"0.1em",textTransform:"uppercase",cursor:"pointer",width:"100%"}}>+ Add New Task</button>
+            ):<AddForm mobile/>}
+          </div>
+
+          {/* SORT ROW */}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,flexWrap:"wrap",gap:8}}>
+            <span style={{fontFamily:"monospace",fontSize:10,letterSpacing:"0.12em",textTransform:"uppercase",color:"#4a4540"}}>{ftitles[filter]} — {vis.length} task{vis.length!==1?"s":""}</span>
+            <div style={{display:"flex",gap:4}}>
+              {[["priority","Priority"],["due","Due Date"],["category","Category"]].map(([s,l])=>(
+                <button key={s} onClick={()=>setSort(s)} style={{fontFamily:"monospace",fontSize:9,letterSpacing:"0.06em",textTransform:"uppercase",padding:"5px 9px",border:"1px solid "+(sort===s?"#b84c1e":"#3a3530"),background:sort===s?"#b84c1e":"none",color:sort===s?"white":"#6b6660",cursor:"pointer"}}>{l}</button>
+              ))}
+            </div>
+          </div>
+
+          {/* TASKS */}
+          {vis.length===0?(
+            <div style={{textAlign:"center",padding:"60px 0",fontFamily:"monospace",fontSize:11,color:"#4a4540",letterSpacing:"0.12em",textTransform:"uppercase"}}>No tasks here</div>
+          ):vis.map(task=>{
+            const ov2=overdue(task),soon=dueSoon(task),off=offDay(task.due,offDays),c=cat(task.cat);
+            const isRecur=task.repeat&&task.repeat!=="none";
+            return (
+              <div key={task.id} className="trow" style={{background:off&&!task.done?"#1a1310":"#161310",border:"1px solid "+(off&&!task.done?"#3a2520":"#2a2520"),borderLeft:`4px solid ${task.done?"#2a2520":PC[task.pri]}`,marginBottom:6,display:"grid",gridTemplateColumns:"34px 1fr auto",alignItems:"center",gap:10,padding:"10px 12px",opacity:task.done?0.4:1}}>
+                <div onClick={()=>toggleDone(task.id)} style={{width:20,height:20,border:`2px solid ${task.done?"#2a6e4a":"#4a4540"}`,background:task.done?"#2a6e4a":"none",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,color:"white",fontSize:12,fontWeight:700}}>{task.done?"✓":""}</div>
+                <div style={{minWidth:0}}>
+                  <div style={{fontSize:14,color:"#e8e4de",marginBottom:4,textDecoration:task.done?"line-through":"none"}}>{task.name}</div>
+                  <div style={{display:"flex",gap:5,flexWrap:"wrap",alignItems:"center"}}>
+                    <span style={{fontSize:10,fontFamily:"monospace",letterSpacing:"0.05em",textTransform:"uppercase",padding:"2px 7px",background:c.bg,color:c.color,fontWeight:500}}>{c.label}</span>
+                    <span style={{fontSize:10,fontFamily:"monospace",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.06em",color:PC[task.pri]}}>{task.pri}</span>
+                    {task.due&&<span style={{fontSize:10,fontFamily:"monospace",color:ov2?"#b84c1e":soon?"#8a6200":off?"#6b4040":"#6b6660",fontWeight:ov2||soon?600:400}}>
+                      {ov2?"⚠ ":""}{fmtDue(task.due)}{off&&!task.done&&<span style={{marginLeft:4,color:"#b84c1e",fontSize:9}}>[OFF DAY]</span>}
+                    </span>}
+                    <RepeatBadge repeat={task.repeat} repeatDays={task.repeatDays} repeatMonthDay={task.repeatMonthDay}/>
+                    {isRecur&&task.done&&<span style={{fontSize:9,fontFamily:"monospace",color:"#4a9a6a"}}>↻ next: {fmtDue(nextOccurrence(task,offDays)||"")}</span>}
+                  </div>
+                </div>
+                <button className="dbtn" onClick={()=>deleteTask(task.id)} style={{background:"none",border:"none",color:"#4a4540",fontSize:18,cursor:"pointer",padding:"2px 6px",lineHeight:1}}>×</button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.render(<App/>, document.getElementById("root"));
+</script>
+</body>
+</html>
